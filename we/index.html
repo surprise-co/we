@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Midnight Bloom</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: #050507;
+    height: 100%;
+    width: 100%;
+    touch-action: none;
+  }
+  canvas {
+    display: block;
+    background: #050507;
+  }
+  #hint {
+    position: fixed;
+    bottom: 22px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    color: rgba(255,255,255,0.32);
+    font-family: 'Georgia', 'Times New Roman', serif;
+    font-style: italic;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    pointer-events: none;
+    transition: opacity 1.2s ease;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">touch the dark to plant a flower</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hint = document.getElementById('hint');
+let W, H, DPR;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- helpers ----------
+function rand(a, b) { return a + Math.random() * (b - a); }
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function easeOutBack(t) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+function easeInOutSine(t) { return -(Math.cos(Math.PI * t) - 1) / 2; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function shadeHex(hex, amt) {
+  const c = hex.replace('#', '');
+  const num = parseInt(c, 16);
+  let r = (num >> 16) & 0xff, g = (num >> 8) & 0xff, b = num & 0xff;
+  if (amt >= 0) { r += (255 - r) * amt; g += (255 - g) * amt; b += (255 - b) * amt; }
+  else { r *= (1 + amt); g *= (1 + amt); b *= (1 + amt); }
+  return `rgb(${r | 0},${g | 0},${b | 0})`;
+}
+
+// ---------- twinkling background stars (fixed positions, only opacity animates smoothly) ----------
+const stars = [];
+for (let i = 0; i < 90; i++) {
+  stars.push({
+    x: Math.random(), y: Math.random() * 0.75,
+    r: rand(0.4, 1.6), phase: rand(0, Math.PI * 2), speed: rand(0.5, 1.4)
+  });
+}
+
+// ---------- species palettes ----------
+const PALETTES = {
+  rose: [
+    { petal: '#c41e3a', deep: '#6e0f1f', light: '#ff8fa3', center: '#4a0a14', leaf: '#3f7d4a' },
+    { petal: '#ff7096', deep: '#a8294f', light: '#ffd6e0', center: '#7a1d39', leaf: '#3f7d4a' },
+    { petal: '#fff3e0', deep: '#e8c9a0', light: '#ffffff', center: '#caa468', leaf: '#4a8f55' },
+    { petal: '#ffb37a', deep: '#c45a1f', light: '#ffe0b0', center: '#7a3210', leaf: '#3f7d4a' },
+    { petal: '#9b4f8f', deep: '#5a2655', light: '#dcb0d6', center: '#3a1538', leaf: '#446b3f' }
+  ],
+  tulip: [
+    { petal: '#e3263b', deep: '#8c0f1f', light: '#ff8a93', center: '#fff2a8', leaf: '#4a8f55' },
+    { petal: '#ffd23f', deep: '#d99a00', light: '#fff3b0', center: '#ff8a3d', leaf: '#4a8f55' },
+    { petal: '#a85ad1', deep: '#6a2c8f', light: '#e3c4ff', center: '#fff2a8', leaf: '#4a8f55' },
+    { petal: '#ff7eb6', deep: '#c43d80', light: '#ffd6e8', center: '#fff2a8', leaf: '#4a8f55' },
+    { petal: '#ff8a3d', deep: '#c4500f', light: '#ffd9a8', center: '#fff2a8', leaf: '#4a8f55' },
+    { petal: '#fffaf0', deep: '#e3d6c0', light: '#ffffff', center: '#ffe27a', leaf: '#4a8f55' }
+  ],
+  bluebell: [
+    { petal: '#5b7fd6', deep: '#2c3f8f', light: '#b9c9ff', center: '#1c2a5e', leaf: '#3f7d4a' },
+    { petal: '#7b6fd6', deep: '#3f2f8f', light: '#cfc4ff', center: '#241c5e', leaf: '#3f7d4a' },
+    { petal: '#c4cfff', deep: '#7f8fd6', light: '#ffffff', center: '#5e6fae', leaf: '#4a8f55' },
+    { petal: '#9badf0', deep: '#4f5fae', light: '#dfe6ff', center: '#2c3a7a', leaf: '#3f7d4a' }
+  ],
+  lily: [
+    { petal: '#ffffff', deep: '#e8d6e0', light: '#ffffff', center: '#ffb347', speck: '#a8295f', leaf: '#4a8f55' },
+    { petal: '#ff9bc4', deep: '#d6477f', light: '#ffe0ec', center: '#ffd166', speck: '#7a1d39', leaf: '#4a8f55' },
+    { petal: '#ffb347', deep: '#d6791f', light: '#ffe0b0', center: '#a83a10', speck: '#7a1d39', leaf: '#3f7d4a' },
+    { petal: '#ffe27a', deep: '#d9b13f', light: '#fff7d6', center: '#a85d12', speck: '#7a4310', leaf: '#4a8f55' }
+  ],
+  daisy: [
+    { petal: '#ffffff', deep: '#e3e3e3', light: '#ffffff', center: '#ffd23f', leaf: '#4a8f55' },
+    { petal: '#ffd6e8', deep: '#e0a0bf', light: '#ffffff', center: '#ffb347', leaf: '#4a8f55' },
+    { petal: '#cdb4ff', deep: '#9d7bff', light: '#f0e3ff', center: '#ffe27a', leaf: '#549660' },
+    { petal: '#ffe27a', deep: '#e0b93f', light: '#fff7d6', center: '#a85d12', leaf: '#4a8f55' }
+  ],
+  sunflower: [
+    { petal: '#ffd23f', deep: '#e0941f', light: '#fff3a0', center: '#5a3a1a', centerLight: '#7a5226', leaf: '#4a8f55' },
+    { petal: '#ffb83d', deep: '#cf7a10', light: '#ffe2a0', center: '#4a2e14', centerLight: '#6b4520', leaf: '#3f7d4a' }
+  ],
+  poppy: [
+    { petal: '#e3263b', deep: '#8c0f1f', light: '#ff7d8a', center: '#1a1414', leaf: '#3f7d4a' },
+    { petal: '#ff7eb6', deep: '#c43d80', light: '#ffd6e8', center: '#241420', leaf: '#4a8f55' },
+    { petal: '#a85ad1', deep: '#6a2c8f', light: '#e3c4ff', center: '#1c1428', leaf: '#446b3f' },
+    { petal: '#ff8a3d', deep: '#c4500f', light: '#ffd9a8', center: '#241810', leaf: '#4a8f55' }
+  ]
+};
+const TYPES = ['rose', 'tulip', 'bluebell', 'lily', 'daisy', 'sunflower', 'poppy'];
+
+// ---------- Flower ----------
+class Flower {
+  constructor(x, y, baseX) {
+    this.x = x;
+    this.y = y;
+    this.baseX = baseX;
+    this.baseY = window.innerHeight + 10;
+    this.born = performance.now();
+    this.type = pick(TYPES);
+    this.pal = pick(PALETTES[this.type]);
+    this.rotation = rand(-0.25, 0.25);
+    this.swayPhase = rand(0, Math.PI * 2);
+    this.swaySpeed = rand(0.5, 1.0);
+    this.size = rand(0.85, 1.2);
+    this.stemSway = rand(5, 11);
+    this.stemThickness = rand(2.6, 3.6);
+
+    this.ctrl1x = this.baseX + (this.x - this.baseX) * 0.25 + rand(-50, 50);
+    this.ctrl1y = this.baseY + (this.y - this.baseY) * 0.35;
+    this.ctrl2x = this.baseX + (this.x - this.baseX) * 0.7 + rand(-40, 40);
+    this.ctrl2y = this.baseY + (this.y - this.baseY) * 0.78;
+
+    this.leaves = [];
+    const leafCount = Math.floor(rand(1, 3));
+    for (let i = 0; i < leafCount; i++) {
+      this.leaves.push({ t: rand(0.3, 0.7), side: i % 2 === 0 ? 1 : -1, size: rand(11, 19) });
+    }
+
+    // fixed per-petal jitter (computed once, never re-randomized -> no flicker)
+    this.jitter = [];
+    for (let i = 0; i < 34; i++) this.jitter.push({ a: rand(-0.06, 0.06), s: rand(0.92, 1.08) });
+
+    // ---- precompute every species-specific size/shape parameter ONCE ----
+    if (this.type === 'daisy') {
+      this.daisyN = Math.floor(rand(11, 16));
+      this.daisyLen = rand(22, 30);
+      this.daisyW = rand(5, 7);
+    }
+
+    if (this.type === 'tulip') {
+      this.tulipLen = rand(30, 38);
+    }
+
+    if (this.type === 'lily') {
+      this.lilyOuterLen = rand(34, 40);
+      this.lilySpeckles = [];
+      for (let p = 0; p < 6; p++) {
+        const arr = [];
+        const count = 5;
+        for (let k = 0; k < count; k++) {
+          arr.push({ t: rand(0.12, 0.55), sxF: rand(-0.5, 0.5), alpha: rand(0.5, 0.85), rot: rand(0, Math.PI) });
+        }
+        this.lilySpeckles.push(arr);
+      }
+    }
+
+    if (this.type === 'sunflower') {
+      this.sfPetalN = Math.floor(rand(22, 30));
+      this.sfPetalLen = rand(26, 33);
+      this.sfPetalW = rand(6.5, 8.5);
+      this.sfCenterR = this.sfPetalLen * 0.42;
+      this.sfDots = [];
+      const golden = Math.PI * (3 - Math.sqrt(5));
+      const dotCount = 80;
+      for (let i = 0; i < dotCount; i++) {
+        const r = this.sfCenterR * Math.sqrt(i / dotCount);
+        const a = i * golden;
+        this.sfDots.push({ x: Math.cos(a) * r, y: Math.sin(a) * r, r: rand(0.8, 1.6) });
+      }
+    }
+
+    if (this.type === 'poppy') {
+      this.poppyN = Math.floor(rand(4, 7));
+      this.poppyLen = rand(27, 34);
+      this.poppyW = rand(21, 27);
+      this.poppyStamenN = Math.floor(rand(14, 20));
+    }
+
+    // bluebell cluster setup
+    if (this.type === 'bluebell') {
+      this.bellCount = Math.floor(rand(3, 6));
+      this.bells = [];
+      for (let i = 0; i < this.bellCount; i++) {
+        this.bells.push({
+          t: 0.62 + (i / this.bellCount) * 0.36 + rand(-0.02, 0.02),
+          side: i % 2 === 0 ? 1 : -1,
+          dist: rand(10, 18),
+          size: rand(9, 14) * rand(0.85, 1.05),
+          phase: rand(0, Math.PI * 2)
+        });
+      }
+    }
+  }
+
+  bezierPoint(t) {
+    const x = Math.pow(1 - t, 3) * this.baseX + 3 * Math.pow(1 - t, 2) * t * this.ctrl1x +
+      3 * (1 - t) * t * t * this.ctrl2x + Math.pow(t, 3) * this.x;
+    const y = Math.pow(1 - t, 3) * this.baseY + 3 * Math.pow(1 - t, 2) * t * this.ctrl1y +
+      3 * (1 - t) * t * t * this.ctrl2y + Math.pow(t, 3) * this.y;
+    return { x, y };
+  }
+
+  drawStem(ctx, now) {
+    const age = (now - this.born) / 1000;
+    const stemPhase = Math.min(age / 0.55, 1);
+    const sway = Math.sin(now / 1000 * this.swaySpeed + this.swayPhase) * (Math.PI / 110);
+    const stemT = easeInOutSine(stemPhase);
+
+    // ---- stem ----
+    ctx.save();
+    ctx.lineCap = 'round';
+    const stemGrad = ctx.createLinearGradient(this.baseX, this.baseY, this.x, this.y);
+    stemGrad.addColorStop(0, shadeHex(this.pal.leaf, -0.25));
+    stemGrad.addColorStop(1, shadeHex(this.pal.leaf, 0.08));
+    ctx.strokeStyle = stemGrad;
+    ctx.lineWidth = this.stemThickness;
+    ctx.beginPath();
+    const steps = 40;
+    const visibleSteps = Math.max(1, Math.floor(steps * stemT));
+    for (let i = 0; i <= visibleSteps; i++) {
+      const t = i / steps;
+      const p = this.bezierPoint(t);
+      const swayOffset = Math.sin(t * Math.PI) * Math.sin(now / 900 + this.swayPhase) * (this.stemSway * (1 - t * 0.3)) * 0.15;
+      const px = p.x + swayOffset;
+      if (i === 0) ctx.moveTo(px, p.y); else ctx.lineTo(px, p.y);
+    }
+    ctx.stroke();
+
+    for (const leaf of this.leaves) {
+      if (stemT < leaf.t) continue;
+      const p = this.bezierPoint(leaf.t);
+      const leafGrow = Math.min((stemT - leaf.t) / 0.15, 1);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(leaf.side * 0.85 + sway);
+      ctx.scale(leafGrow, leafGrow);
+      const lg = ctx.createLinearGradient(0, 0, leaf.side * leaf.size * 1.6, 0);
+      lg.addColorStop(0, shadeHex(this.pal.leaf, -0.15));
+      lg.addColorStop(1, shadeHex(this.pal.leaf, 0.15));
+      ctx.fillStyle = lg;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(leaf.side * leaf.size, -leaf.size * 0.55, leaf.side * leaf.size * 1.6, 0);
+      ctx.quadraticCurveTo(leaf.side * leaf.size, leaf.size * 0.55, 0, 0);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(leaf.side * leaf.size * 1.5, 0);
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  drawHead(ctx, now) {
+    const age = (now - this.born) / 1000;
+    const stemPhase = Math.min(age / 0.55, 1);
+    if (stemPhase < 1) return;
+    const bloomPhase = clamp((age - 0.4) / 0.8, 0, 1);
+    const sway = Math.sin(now / 1000 * this.swaySpeed + this.swayPhase) * (Math.PI / 110);
+
+    if (this.type === 'bluebell') {
+      this.drawBluebells(ctx, now, bloomPhase, sway);
+      return;
+    }
+
+    const tip = this.bezierPoint(1);
+    const bloomEase = easeOutBack(bloomPhase);
+    const scale = bloomEase * this.size;
+    if (scale <= 0) return;
+
+    ctx.save();
+    ctx.translate(tip.x, tip.y);
+    ctx.rotate(this.rotation + sway);
+
+    // soft glow behind bloom
+    ctx.save();
+    ctx.scale(scale, scale);
+    const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 40);
+    glow.addColorStop(0, 'rgba(255,255,255,0.18)');
+    glow.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(0, 0, 40, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.scale(scale, scale);
+    if (this.type === 'rose') this.drawRose(ctx);
+    else if (this.type === 'tulip') this.drawTulip(ctx);
+    else if (this.type === 'lily') this.drawLily(ctx);
+    else if (this.type === 'sunflower') this.drawSunflower(ctx);
+    else if (this.type === 'poppy') this.drawPoppy(ctx);
+    else this.drawDaisy(ctx);
+
+    ctx.restore();
+  }
+
+  petalPath(ctx, w, len, pointiness) {
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(-w, -len * 0.32, -w * (0.55 + pointiness * 0.3), -len * (1 - pointiness * 0.15), 0, -len);
+    ctx.bezierCurveTo(w * (0.55 + pointiness * 0.3), -len * (1 - pointiness * 0.15), w, -len * 0.32, 0, 0);
+    ctx.closePath();
+  }
+
+  drawDaisy(ctx) {
+    const pal = this.pal;
+    const n = this.daisyN, len = this.daisyLen, w = this.daisyW;
+    for (let i = 0; i < n; i++) {
+      const j = this.jitter[i % this.jitter.length];
+      const ang = (i / n) * Math.PI * 2 + j.a;
+      ctx.save();
+      ctx.rotate(ang);
+      ctx.scale(j.s, j.s);
+      const grad = ctx.createLinearGradient(0, 0, 0, -len);
+      grad.addColorStop(0, pal.deep);
+      grad.addColorStop(0.55, pal.petal);
+      grad.addColorStop(1, pal.light);
+      ctx.fillStyle = grad;
+      this.petalPath(ctx, w, len, 0.55);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+      ctx.restore();
+    }
+    const cgrad = ctx.createRadialGradient(0, 0, 0, 0, 0, 9);
+    cgrad.addColorStop(0, shadeHex(pal.center, 0.3));
+    cgrad.addColorStop(1, shadeHex(pal.center, -0.1));
+    ctx.fillStyle = cgrad;
+    ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const r = 3 + (i % 3);
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * r, Math.sin(a) * r, 0.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  drawRose(ctx) {
+    const pal = this.pal;
+    const layers = [
+      { n: 6, len: 26, w: 19, rot: 0, shade: 0.05 },
+      { n: 5, len: 19, w: 14.5, rot: 0.28, shade: -0.08 },
+      { n: 5, len: 13, w: 10, rot: 0.55, shade: -0.18 },
+      { n: 3, len: 7.5, w: 6, rot: 0.85, shade: -0.3 }
+    ];
+    let ji = 0;
+    for (const layer of layers) {
+      for (let i = 0; i < layer.n; i++) {
+        const j = this.jitter[ji++ % this.jitter.length];
+        const ang = (i / layer.n) * Math.PI * 2 + layer.rot + j.a;
+        ctx.save();
+        ctx.rotate(ang);
+        ctx.scale(j.s, j.s);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.bezierCurveTo(-layer.w, -layer.len * 0.25, -layer.w * 0.95, -layer.len * 0.92, -layer.w * 0.15, -layer.len);
+        ctx.quadraticCurveTo(0, -layer.len * 0.92, layer.w * 0.15, -layer.len);
+        ctx.bezierCurveTo(layer.w * 0.95, -layer.len * 0.92, layer.w, -layer.len * 0.25, 0, 0);
+        ctx.closePath();
+        const grad = ctx.createLinearGradient(0, 0, 0, -layer.len);
+        grad.addColorStop(0, shadeHex(pal.deep, layer.shade - 0.1));
+        grad.addColorStop(0.6, shadeHex(pal.petal, layer.shade));
+        grad.addColorStop(1, shadeHex(pal.light, layer.shade * 0.5));
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    ctx.save();
+    ctx.fillStyle = shadeHex(pal.center, 0.05);
+    ctx.beginPath();
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2;
+      ctx.ellipse(Math.cos(a) * 1.5, Math.sin(a) * 1.5 - 1, 2.6, 4, a, 0, Math.PI * 2);
+    }
+    ctx.fill();
+    ctx.restore();
+  }
+
+  drawTulip(ctx) {
+    const pal = this.pal;
+    const len = this.tulipLen;
+    const w = len * 0.34;
+    const outerAngles = [-0.62, 0, 0.62];
+    const innerAngles = [-0.34, 0.34];
+    ctx.save();
+    let ji = 0;
+    const drawTulipPetal = (ang, scaleAdj, shadeAdj) => {
+      const j = this.jitter[ji++ % this.jitter.length];
+      ctx.save();
+      ctx.rotate(ang + j.a * 0.5);
+      ctx.scale(scaleAdj * j.s, scaleAdj * j.s);
+      ctx.beginPath();
+      ctx.moveTo(-w * 0.18, 2);
+      ctx.bezierCurveTo(-w, -len * 0.35, -w * 0.7, -len * 0.92, 0, -len);
+      ctx.bezierCurveTo(w * 0.7, -len * 0.92, w, -len * 0.35, w * 0.18, 2);
+      ctx.closePath();
+      const grad = ctx.createLinearGradient(0, 2, 0, -len);
+      grad.addColorStop(0, shadeHex(pal.center, 0));
+      grad.addColorStop(0.35, shadeHex(pal.petal, shadeAdj));
+      grad.addColorStop(1, shadeHex(pal.light, shadeAdj));
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+      ctx.restore();
+    };
+    for (const a of outerAngles) drawTulipPetal(a, 1.0, -0.05);
+    for (const a of innerAngles) drawTulipPetal(a, 0.86, 0.08);
+    drawTulipPetal(0, 0.78, 0.15);
+    ctx.restore();
+  }
+
+  drawLily(ctx) {
+    const pal = this.pal;
+    const n = 6;
+    const outerLen = this.lilyOuterLen;
+    const innerLen = outerLen * 0.82;
+    const w = outerLen * 0.22;
+    for (let i = 0; i < n; i++) {
+      const j = this.jitter[i % this.jitter.length];
+      const len = i % 2 === 0 ? outerLen : innerLen;
+      const ang = (i / n) * Math.PI * 2 + j.a;
+      ctx.save();
+      ctx.rotate(ang);
+      ctx.scale(j.s, j.s);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(-w, -len * 0.55, -w * 0.12, -len * 0.92);
+      ctx.quadraticCurveTo(0, -len * 1.05, w * 0.12, -len * 0.92);
+      ctx.quadraticCurveTo(w, -len * 0.55, 0, 0);
+      ctx.closePath();
+      const grad = ctx.createLinearGradient(0, 0, 0, -len);
+      grad.addColorStop(0, pal.deep);
+      grad.addColorStop(0.5, pal.petal);
+      grad.addColorStop(1, pal.light);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(0, -2);
+      ctx.lineTo(0, -len * 0.9);
+      ctx.stroke();
+      if (pal.speck) {
+        ctx.fillStyle = pal.speck;
+        const speckles = this.lilySpeckles[i];
+        for (const sp of speckles) {
+          ctx.globalAlpha = sp.alpha;
+          const sx = sp.sxF * w * (1 - sp.t);
+          ctx.beginPath();
+          ctx.ellipse(sx, -len * sp.t, 1.1, 0.7, sp.rot, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+      ctx.restore();
+    }
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2 + 0.3;
+      const slen = outerLen * 0.42;
+      ctx.save();
+      ctx.rotate(ang);
+      ctx.strokeStyle = pal.light;
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(2, -slen * 0.6, 0, -slen);
+      ctx.stroke();
+      ctx.fillStyle = pal.speck || '#7a4310';
+      ctx.beginPath();
+      ctx.ellipse(0, -slen, 2.6, 1.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    const cgrad = ctx.createRadialGradient(0, 0, 0, 0, 0, 5);
+    cgrad.addColorStop(0, shadeHex(pal.center, 0.2));
+    cgrad.addColorStop(1, pal.center);
+    ctx.fillStyle = cgrad;
+    ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
+  }
+
+  drawSunflower(ctx) {
+    const pal = this.pal;
+    const n = this.sfPetalN, len = this.sfPetalLen, w = this.sfPetalW;
+    for (let i = 0; i < n; i++) {
+      const j = this.jitter[i % this.jitter.length];
+      const ang = (i / n) * Math.PI * 2 + j.a;
+      ctx.save();
+      ctx.rotate(ang);
+      ctx.scale(j.s, j.s);
+      ctx.beginPath();
+      ctx.moveTo(0, -this.sfCenterR * 0.78);
+      ctx.quadraticCurveTo(-w, -this.sfCenterR * 0.78 - len * 0.5, -w * 0.18, -this.sfCenterR * 0.78 - len);
+      ctx.quadraticCurveTo(0, -this.sfCenterR * 0.78 - len * 1.08, w * 0.18, -this.sfCenterR * 0.78 - len);
+      ctx.quadraticCurveTo(w, -this.sfCenterR * 0.78 - len * 0.5, 0, -this.sfCenterR * 0.78);
+      ctx.closePath();
+      const grad = ctx.createLinearGradient(0, -this.sfCenterR * 0.78, 0, -this.sfCenterR * 0.78 - len);
+      grad.addColorStop(0, pal.deep);
+      grad.addColorStop(0.6, pal.petal);
+      grad.addColorStop(1, pal.light);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+      ctx.lineWidth = 0.4;
+      ctx.stroke();
+      ctx.restore();
+    }
+    const cgrad = ctx.createRadialGradient(0, 0, 0, 0, 0, this.sfCenterR);
+    cgrad.addColorStop(0, pal.centerLight);
+    cgrad.addColorStop(1, pal.center);
+    ctx.fillStyle = cgrad;
+    ctx.beginPath(); ctx.arc(0, 0, this.sfCenterR, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    for (const d of this.sfDots) {
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(0, 0, this.sfCenterR, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  drawPoppy(ctx) {
+    const pal = this.pal;
+    const n = this.poppyN, len = this.poppyLen, w = this.poppyW;
+    for (let i = 0; i < n; i++) {
+      const j = this.jitter[i % this.jitter.length];
+      const ang = (i / n) * Math.PI * 2 + j.a;
+      ctx.save();
+      ctx.rotate(ang);
+      ctx.scale(j.s, j.s);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.bezierCurveTo(-w, -len * 0.22, -w * 1.08, -len * 0.62, -w * 0.32, -len * 0.86);
+      ctx.bezierCurveTo(-w * 0.52, -len * 1.04, w * 0.52, -len * 1.04, w * 0.32, -len * 0.86);
+      ctx.bezierCurveTo(w * 1.08, -len * 0.62, w, -len * 0.22, 0, 0);
+      ctx.closePath();
+      const grad = ctx.createLinearGradient(0, 0, 0, -len);
+      grad.addColorStop(0, pal.deep);
+      grad.addColorStop(0.55, pal.petal);
+      grad.addColorStop(1, pal.light);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      // dark blotch near base (classic poppy look)
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath();
+      ctx.ellipse(0, -len * 0.18, w * 0.32, len * 0.16, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+      ctx.restore();
+    }
+    // dark seed pod center
+    ctx.fillStyle = pal.center;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 5.5, 6.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 0.6;
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * 2, Math.sin(a) * 2.5);
+      ctx.lineTo(Math.cos(a) * 5.5, Math.sin(a) * 6.5);
+      ctx.stroke();
+    }
+    // ring of stamens around the pod
+    for (let i = 0; i < this.poppyStamenN; i++) {
+      const j = this.jitter[i % this.jitter.length];
+      const ang = (i / this.poppyStamenN) * Math.PI * 2 + j.a;
+      ctx.save();
+      ctx.rotate(ang);
+      ctx.translate(0, -7);
+      ctx.strokeStyle = '#3a2a18';
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(0, -3.5);
+      ctx.stroke();
+      ctx.fillStyle = '#2a1c10';
+      ctx.beginPath();
+      ctx.ellipse(0, -3.8, 1.1, 0.7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  drawBell(ctx, size, pal) {
+    const w = size * 0.95;
+    ctx.beginPath();
+    ctx.moveTo(-w * 0.1, 0);
+    ctx.bezierCurveTo(-w * 0.62, size * 0.55, -w * 0.58, size * 0.92, -w * 0.46, size);
+    const lobes = 5;
+    for (let k = 0; k < lobes; k++) {
+      const x0 = lerp(-w * 0.46, w * 0.46, k / lobes);
+      const x1 = lerp(-w * 0.46, w * 0.46, (k + 1) / lobes);
+      const midX = (x0 + x1) / 2;
+      const tipY = size * (k % 2 === 0 ? 1.08 : 1.14);
+      ctx.quadraticCurveTo(midX, tipY, x1, size);
+    }
+    ctx.bezierCurveTo(w * 0.58, size * 0.92, w * 0.62, size * 0.55, w * 0.1, 0);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, 0, 0, size);
+    grad.addColorStop(0, shadeHex(pal.deep, -0.1));
+    grad.addColorStop(0.5, pal.petal);
+    grad.addColorStop(1, shadeHex(pal.light, 0.05));
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.lineWidth = 0.5;
+    for (let k = -1; k <= 1; k++) {
+      ctx.beginPath();
+      ctx.moveTo(k * w * 0.18, size * 0.1);
+      ctx.lineTo(k * w * 0.3, size * 0.95);
+      ctx.stroke();
+    }
+  }
+
+  drawBluebells(ctx, now, bloomPhase, sway) {
+    const pal = this.pal;
+    const bloomEase = easeOutBack(bloomPhase);
+    if (bloomEase <= 0) return;
+    for (const bell of this.bells) {
+      const p = this.bezierPoint(Math.min(bell.t, 1));
+      const wobble = Math.sin(now / 850 + bell.phase) * 0.08;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(sway * 0.6);
+      ctx.strokeStyle = shadeHex(pal.leaf, 0);
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(bell.side * bell.dist * 0.7, bell.dist * 0.3, bell.side * bell.dist, bell.dist * 0.9);
+      ctx.stroke();
+      ctx.translate(bell.side * bell.dist, bell.dist * 0.9);
+      ctx.rotate(Math.PI + bell.side * 0.18 + wobble);
+      ctx.scale(this.size * bloomEase, this.size * bloomEase);
+      this.drawBell(ctx, bell.size, pal);
+      ctx.restore();
+    }
+  }
+}
+
+// ---------- sparkles ----------
+class Sparkle {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.vx = rand(-0.4, 0.4); this.vy = rand(-1.2, -0.4);
+    this.born = performance.now(); this.life = rand(900, 1600); this.r = rand(1, 2.4);
+  }
+  draw(ctx, now) {
+    const t = (now - this.born) / this.life;
+    if (t >= 1) return false;
+    this.x += this.vx * 0.5; this.y += this.vy * 0.5;
+    ctx.save();
+    ctx.globalAlpha = (1 - t) * 0.9;
+    ctx.fillStyle = '#fff7d6';
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.r * (1 - t * 0.5), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    return true;
+  }
+}
+
+let flowers = [];
+let sparkles = [];
+const MAX_FLOWERS = 50;
+
+function spawnFlower(x, y) {
+  const baseX = window.innerWidth / 2 + rand(-40, 40);
+  flowers.push(new Flower(x, y, baseX));
+  if (flowers.length > MAX_FLOWERS) flowers.shift();
+  for (let i = 0; i < 10; i++) sparkles.push(new Sparkle(x, y));
+  hint.style.opacity = '0';
+}
+
+function handlePointer(e) {
+  e.preventDefault();
+  let x, y;
+  if (e.changedTouches && e.changedTouches.length) {
+    x = e.changedTouches[0].clientX; y = e.changedTouches[0].clientY;
+  } else { x = e.clientX; y = e.clientY; }
+  spawnFlower(x, y);
+}
+canvas.addEventListener('pointerdown', handlePointer, { passive: false });
+canvas.addEventListener('touchstart', handlePointer, { passive: false });
+
+function drawBackground(now) {
+  ctx.fillStyle = '#05050a';
+  ctx.fillRect(0, 0, W, H);
+  const grad = ctx.createRadialGradient(W / 2, H * 0.4, 0, W / 2, H * 0.4, Math.max(W, H) * 0.7);
+  grad.addColorStop(0, 'rgba(20,18,35,0.0)');
+  grad.addColorStop(1, 'rgba(0,0,0,0.45)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+  for (const s of stars) {
+    const tw = (Math.sin(now / 1000 * s.speed + s.phase) + 1) / 2;
+    ctx.save();
+    ctx.globalAlpha = 0.15 + tw * 0.5;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(s.x * W, s.y * H, s.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function loop() {
+  const now = performance.now();
+  drawBackground(now);
+  for (const f of flowers) f.drawStem(ctx, now);
+  for (const f of flowers) f.drawHead(ctx, now);
+  sparkles = sparkles.filter(s => s.draw(ctx, now));
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
